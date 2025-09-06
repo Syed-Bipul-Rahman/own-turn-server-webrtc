@@ -1,0 +1,21 @@
+{
+  "name": "webrtc-signaling-server",
+  "version": "1.0.0",
+  "description": "WebRTC Signaling Server for Flutter WebRTC App",
+  "main": "signaling_server.js",
+  "scripts": {
+    "start": "node signaling_server.js",
+    "dev": "nodemon signaling_server.js"
+  },
+  "keywords": ["webrtc", "signaling", "flutter", "socket.io"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
