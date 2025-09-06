@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'dart:convert';
 import 'dart:math';
+import 'config.dart';
+import 'signaling_service.dart';
 
 void main() {
   runApp(const MyApp());
@@ -34,72 +35,76 @@ class WebRTCVideoChat extends StatefulWidget {
 class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   final _localVideoRenderer = RTCVideoRenderer();
   final _remoteVideoRenderer = RTCVideoRenderer();
-  final _localAudioRenderer = RTCVideoRenderer();
-  final _remoteAudioRenderer = RTCVideoRenderer();
-
+  final _signaling = SignalingService();
+  
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   bool _isInitialized = false;
-  bool _isCaller = false;
   bool _isConnected = false;
   bool _isMuted = false;
   bool _isVideoEnabled = true;
   String _connectionStatus = 'Disconnected';
-
-  // Your TURN server configuration
-  final Map<String, dynamic> _iceServers = {
-    'iceServers': [
-      {
-        'urls': 'stun:34.71.140.192:3478'
-      },
-      {
-        'urls': 'turn:34.71.140.192:3478',
-        'username': 'bipul',
-        'credential': 'rahman'
-      }
-    ]
-  };
-
-  final Map<String, dynamic> _config = {
-    'mandatory': {},
-    'optional': [
-      {'DtlsSrtpKeyAgreement': true},
-    ]
-  };
-
-  final Map<String, dynamic> _constraints = {
-    'mandatory': {
-      'OfferToReceiveAudio': true,
-      'OfferToReceiveVideo': true,
-    },
-    'optional': [],
-  };
+  String? _remoteSocketId;
+  String _currentRoom = 'test-room';
+  String _userId = 'user-${Random().nextInt(10000)}';
 
   @override
   void initState() {
     super.initState();
     _initializeRenderers();
+    _setupSignalingCallbacks();
   }
 
   @override
   void dispose() {
     _localVideoRenderer.dispose();
     _remoteVideoRenderer.dispose();
-    _localAudioRenderer.dispose();
-    _remoteAudioRenderer.dispose();
     _localStream?.dispose();
     _peerConnection?.dispose();
+    _signaling.disconnect();
     super.dispose();
   }
 
   Future<void> _initializeRenderers() async {
     await _localVideoRenderer.initialize();
     await _remoteVideoRenderer.initialize();
-    await _localAudioRenderer.initialize();
-    await _remoteAudioRenderer.initialize();
     setState(() {
       _isInitialized = true;
     });
+  }
+
+  void _setupSignalingCallbacks() {
+    _signaling.onOfferReceived = (socketId, offer) async {
+      _remoteSocketId = socketId;
+      await _handleReceivedOffer(offer);
+    };
+
+    _signaling.onAnswerReceived = (socketId, answer) async {
+      await _handleReceivedAnswer(answer);
+    };
+
+    _signaling.onIceCandidateReceived = (socketId, candidate) async {
+      await _handleReceivedIceCandidate(candidate);
+    };
+
+    _signaling.onUserJoined = (socketId) {
+      setState(() {
+        _connectionStatus = 'User joined: $socketId';
+        _remoteSocketId = socketId;
+      });
+    };
+
+    _signaling.onUserLeft = (socketId) {
+      setState(() {
+        _connectionStatus = 'User left';
+        _remoteSocketId = null;
+      });
+    };
+
+    _signaling.onIncomingCall = (callerSocketId) {
+      _remoteSocketId = callerSocketId;
+      _signaling.respondToCall(callerSocketId, true);
+    };
   }
 
   Future<void> _requestPermissions() async {
@@ -110,21 +115,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   Future<void> _getUserMedia() async {
     try {
       await _requestPermissions();
-
-      final Map<String, dynamic> mediaConstraints = {
-        'audio': true,
-        'video': {
-          'mandatory': {
-            'minWidth': '640',
-            'minHeight': '480',
-            'minFrameRate': '30',
-          },
-          'facingMode': 'user',
-          'optional': [],
-        }
-      };
-
-      _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      _localStream = await navigator.mediaDevices.getUserMedia(Config.mediaConstraints);
       _localVideoRenderer.srcObject = _localStream;
 
       setState(() {
@@ -139,12 +130,12 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
 
   Future<void> _createPeerConnection() async {
     try {
-      _peerConnection = await createPeerConnection(_iceServers, _config);
+      _peerConnection = await createPeerConnection(Config.iceServers, Config.rtcConfig);
 
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
-        // In a real app, you would send this candidate to the remote peer
-        // through your signaling server
-        print('ICE Candidate: ${candidate.toMap()}');
+        if (_remoteSocketId != null) {
+          _signaling.sendIceCandidate(_remoteSocketId!, candidate);
+        }
       };
 
       _peerConnection!.onIceConnectionState = (RTCIceConnectionState state) {
@@ -176,19 +167,16 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   }
 
   Future<void> _createOffer() async {
-    if (_peerConnection == null) return;
+    if (_peerConnection == null || _remoteSocketId == null) return;
 
     try {
-      RTCSessionDescription description = await _peerConnection!.createOffer(_constraints);
+      RTCSessionDescription description = await _peerConnection!.createOffer(Config.offerAnswerConstraints);
       await _peerConnection!.setLocalDescription(description);
+      _signaling.sendOffer(_remoteSocketId!, description);
 
       setState(() {
-        _isCaller = true;
-        _connectionStatus = 'Offer created. SDP: ${description.sdp?.substring(0, 100)}...';
+        _connectionStatus = 'Offer sent';
       });
-
-      // In a real app, you would send this offer to the remote peer
-      print('Offer SDP: ${description.sdp}');
     } catch (e) {
       setState(() {
         _connectionStatus = 'Error creating offer: $e';
@@ -197,18 +185,16 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   }
 
   Future<void> _createAnswer() async {
-    if (_peerConnection == null) return;
+    if (_peerConnection == null || _remoteSocketId == null) return;
 
     try {
-      RTCSessionDescription description = await _peerConnection!.createAnswer(_constraints);
+      RTCSessionDescription description = await _peerConnection!.createAnswer(Config.offerAnswerConstraints);
       await _peerConnection!.setLocalDescription(description);
+      _signaling.sendAnswer(_remoteSocketId!, description);
 
       setState(() {
-        _connectionStatus = 'Answer created. SDP: ${description.sdp?.substring(0, 100)}...';
+        _connectionStatus = 'Answer sent';
       });
-
-      // In a real app, you would send this answer to the remote peer
-      print('Answer SDP: ${description.sdp}');
     } catch (e) {
       setState(() {
         _connectionStatus = 'Error creating answer: $e';
@@ -216,33 +202,44 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
     }
   }
 
-  Future<void> _setRemoteDescription(String sdp, String type) async {
+  Future<void> _handleReceivedOffer(RTCSessionDescription offer) async {
     if (_peerConnection == null) return;
 
     try {
-      RTCSessionDescription description = RTCSessionDescription(sdp, type);
-      await _peerConnection!.setRemoteDescription(description);
+      await _peerConnection!.setRemoteDescription(offer);
+      await _createAnswer();
       
       setState(() {
-        _connectionStatus = 'Remote description set';
+        _connectionStatus = 'Offer received, answer sent';
       });
-
-      if (type == 'offer') {
-        await _createAnswer();
-      }
     } catch (e) {
       setState(() {
-        _connectionStatus = 'Error setting remote description: $e';
+        _connectionStatus = 'Error handling offer: $e';
       });
     }
   }
 
-  Future<void> _addIceCandidate(String candidate, int sdpMLineIndex, String sdpMid) async {
+  Future<void> _handleReceivedAnswer(RTCSessionDescription answer) async {
     if (_peerConnection == null) return;
 
     try {
-      RTCIceCandidate iceCandidate = RTCIceCandidate(candidate, sdpMid, sdpMLineIndex);
-      await _peerConnection!.addCandidate(iceCandidate);
+      await _peerConnection!.setRemoteDescription(answer);
+      
+      setState(() {
+        _connectionStatus = 'Answer received';
+      });
+    } catch (e) {
+      setState(() {
+        _connectionStatus = 'Error handling answer: $e';
+      });
+    }
+  }
+
+  Future<void> _handleReceivedIceCandidate(RTCIceCandidate candidate) async {
+    if (_peerConnection == null) return;
+
+    try {
+      await _peerConnection!.addCandidate(candidate);
     } catch (e) {
       setState(() {
         _connectionStatus = 'Error adding ICE candidate: $e';
@@ -286,20 +283,34 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
     });
   }
 
-  void _simulateCall() async {
+  void _startCall() async {
+    // Connect to signaling server
+    setState(() {
+      _connectionStatus = 'Connecting to signaling server...';
+    });
+    
+    _signaling.connect(Config.currentSignalingUrl);
+    
+    // Wait a moment for connection
+    await Future.delayed(const Duration(seconds: 1));
+    
+    // Join room
+    _signaling.joinRoom(_currentRoom, _userId);
+    
+    // Get user media and create peer connection
     await _getUserMedia();
     await _createPeerConnection();
-    await _createOffer();
     
-    // Simulate receiving the offer and creating an answer
-    // In a real app, this would happen on the remote peer
-    await Future.delayed(const Duration(seconds: 2));
-    
-    // For demo purposes, we'll simulate a successful connection
     setState(() {
-      _connectionStatus = 'Simulated call connected';
-      _isConnected = true;
+      _connectionStatus = 'Ready for call - waiting for peer...';
     });
+  }
+
+  void _initiateCall() async {
+    if (_remoteSocketId != null) {
+      _signaling.initiateCall(_remoteSocketId!);
+      await _createOffer();
+    }
   }
 
   @override
@@ -392,9 +403,9 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
               children: [
                 // Start call button
                 ElevatedButton.icon(
-                  onPressed: _isConnected ? null : _simulateCall,
+                  onPressed: _isConnected ? null : (_remoteSocketId == null ? _startCall : _initiateCall),
                   icon: const Icon(Icons.call),
-                  label: const Text('Start Call'),
+                  label: Text(_remoteSocketId == null ? 'Join Room' : 'Call Peer'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,

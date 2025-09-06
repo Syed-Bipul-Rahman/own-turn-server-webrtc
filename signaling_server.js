@@ -15,7 +15,7 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // Store connected users and rooms
 const users = new Map();
@@ -159,7 +159,21 @@ app.get('/rooms/:roomId', (req, res) => {
   });
 });
 
-server.listen(PORT, () => {
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    service: 'WebRTC Signaling Server',
+    status: 'running',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      rooms: '/rooms/:roomId'
+    }
+  });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`WebRTC Signaling Server running on port ${PORT}`);
   console.log(`Health check available at http://localhost:${PORT}/health`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
