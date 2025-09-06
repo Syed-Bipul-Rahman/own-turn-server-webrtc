@@ -28,17 +28,30 @@ class Config {
     ],
   };
 
-  // Media constraints
+  // Media constraints - optimized for Android stability
   static const Map<String, dynamic> mediaConstraints = {
-    'audio': true,
+    'audio': {
+      'mandatory': {},
+      'optional': [
+        {'googEchoCancellation': true},
+        {'googNoiseSuppression': true},
+        {'googHighpassFilter': true},
+      ],
+    },
     'video': {
       'mandatory': {
-        'minWidth': '640',
-        'minHeight': '480',
-        'minFrameRate': '30',
+        'minWidth': '320',
+        'minHeight': '240', 
+        'maxWidth': '1280',
+        'maxHeight': '720',
+        'minFrameRate': '15',
+        'maxFrameRate': '30',
       },
       'facingMode': 'user',
-      'optional': [],
+      'optional': [
+        {'googCpuOveruseDetection': true},
+        {'googNoiseReduction': true},
+      ],
     },
   };
 

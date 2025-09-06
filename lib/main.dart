@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter/services.dart';
 import 'dart:math';
+import 'dart:io';
 import 'config.dart';
 import 'signaling_service.dart';
 
@@ -33,7 +35,7 @@ class WebRTCVideoChat extends StatefulWidget {
   State<WebRTCVideoChat> createState() => _WebRTCVideoChatState();
 }
 
-class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
+class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingObserver {
   final _localVideoRenderer = RTCVideoRenderer();
   final _remoteVideoRenderer = RTCVideoRenderer();
   final _signaling = SignalingService();
@@ -44,6 +46,8 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   bool _isConnected = false;
   bool _isMuted = false;
   bool _isVideoEnabled = true;
+  bool _isInBackground = false;
+  bool _isDisposed = false;
   String _connectionStatus = 'Disconnected';
   String? _remoteSocketId;
   String _currentRoom = 'test-room';
@@ -52,18 +56,106 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initializeRenderers();
     _setupSignalingCallbacks();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.paused:
+        _isInBackground = true;
+        _pauseCamera();
+        break;
+      case AppLifecycleState.resumed:
+        _isInBackground = false;
+        _resumeCamera();
+        break;
+      case AppLifecycleState.detached:
+        _cleanupResources();
+        break;
+      default:
+        break;
+    }
+  }
+
+  @override
   void dispose() {
-    _localVideoRenderer.dispose();
-    _remoteVideoRenderer.dispose();
-    _localStream?.dispose();
-    _peerConnection?.dispose();
-    _signaling.disconnect();
+    _isDisposed = true;
+    WidgetsBinding.instance.removeObserver(this);
+    _cleanupResources();
     super.dispose();
+  }
+
+  Future<void> _cleanupResources() async {
+    try {
+      await _localStream?.dispose();
+      _localStream = null;
+      await _peerConnection?.dispose();
+      _peerConnection = null;
+      await _localVideoRenderer.dispose();
+      await _remoteVideoRenderer.dispose();
+      _signaling.disconnect();
+    } catch (e) {
+      print('Error cleaning up resources: $e');
+    }
+  }
+
+  Future<void> _pauseCamera() async {
+    if (_localStream != null && !_isDisposed) {
+      try {
+        _localStream!.getVideoTracks().forEach((track) {
+          track.enabled = false;
+        });
+      } catch (e) {
+        print('Error pausing camera: $e');
+      }
+    }
+  }
+
+  Future<void> _resumeCamera() async {
+    if (_localStream != null && !_isDisposed && _isVideoEnabled) {
+      try {
+        _localStream!.getVideoTracks().forEach((track) {
+          track.enabled = true;
+        });
+      } catch (e) {
+        print('Error resuming camera: $e');
+        // If resume fails, try to reinitialize camera
+        await _reinitializeCamera();
+      }
+    }
+  }
+
+  Future<void> _reinitializeCamera() async {
+    if (_isDisposed) return;
+    
+    try {
+      setState(() {
+        _connectionStatus = 'Reinitializing camera...';
+      });
+      
+      // Dispose old stream
+      await _localStream?.dispose();
+      _localStream = null;
+      _localVideoRenderer.srcObject = null;
+      
+      // Get new stream
+      await _getUserMedia();
+      
+      // Update peer connection if exists
+      if (_peerConnection != null && _localStream != null) {
+        await _peerConnection!.addStream(_localStream!);
+      }
+    } catch (e) {
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Failed to reinitialize camera: $e';
+        });
+      }
+    }
   }
 
   Future<void> _initializeRenderers() async {
@@ -109,81 +201,282 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   }
 
   Future<bool> _requestPermissions() async {
-    final cameraStatus = await Permission.camera.request();
-    final microphoneStatus = await Permission.microphone.request();
-    
-    if (cameraStatus != PermissionStatus.granted) {
-      setState(() {
-        _connectionStatus = 'Camera permission denied';
-      });
+    try {
+      // Check current status first
+      final cameraStatus = await Permission.camera.status;
+      final microphoneStatus = await Permission.microphone.status;
+      
+      if (cameraStatus == PermissionStatus.granted && 
+          microphoneStatus == PermissionStatus.granted) {
+        return true;
+      }
+      
+      // Request permissions
+      Map<Permission, PermissionStatus> statuses = await [
+        Permission.camera,
+        Permission.microphone,
+      ].request();
+      
+      final cameraGranted = statuses[Permission.camera] == PermissionStatus.granted;
+      final micGranted = statuses[Permission.microphone] == PermissionStatus.granted;
+      
+      if (!cameraGranted) {
+        if (!_isDisposed) {
+          setState(() {
+            _connectionStatus = 'Camera permission required for video calls';
+          });
+        }
+        return false;
+      }
+      
+      if (!micGranted) {
+        if (!_isDisposed) {
+          setState(() {
+            _connectionStatus = 'Microphone permission required for audio calls';
+          });
+        }
+        return false;
+      }
+      
+      return true;
+    } catch (e) {
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Permission request failed: $e';
+        });
+      }
       return false;
     }
-    
-    if (microphoneStatus != PermissionStatus.granted) {
-      setState(() {
-        _connectionStatus = 'Microphone permission denied';
-      });
-      return false;
-    }
-    
-    return true;
   }
 
   Future<void> _getUserMedia() async {
+    if (_isDisposed || _isInBackground) return;
+    
     try {
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Requesting camera access...';
+        });
+      }
+      
       final permissionsGranted = await _requestPermissions();
-      if (!permissionsGranted) {
+      if (!permissionsGranted || _isDisposed) {
         return;
       }
       
+      // Add small delay to ensure camera is ready
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      if (_isDisposed) return;
+      
       _localStream = await navigator.mediaDevices.getUserMedia(Config.mediaConstraints);
+      
+      if (_isDisposed) {
+        await _localStream?.dispose();
+        return;
+      }
+      
       _localVideoRenderer.srcObject = _localStream;
-
-      setState(() {
-        _connectionStatus = 'Local media ready';
+      
+      // Add stream tracks event listeners for Android
+      _localStream?.getVideoTracks().forEach((track) {
+        track.onEnded = () {
+          print('Video track ended');
+          if (!_isDisposed) {
+            _reinitializeCamera();
+          }
+        };
       });
+      
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Camera ready';
+        });
+      }
     } catch (e) {
-      setState(() {
-        _connectionStatus = 'Error getting media: $e';
-      });
+      print('Error getting user media: $e');
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Camera error: ${e.toString().split(':').last.trim()}';
+        });
+        
+        // Try again with lower quality settings on Android
+        if (Platform.isAndroid) {
+          await _tryFallbackCamera();
+        }
+      }
+    }
+  }
+  
+  Future<void> _tryFallbackCamera() async {
+    if (_isDisposed) return;
+    
+    try {
+      const fallbackConstraints = {
+        'audio': true,
+        'video': {
+          'mandatory': {
+            'minWidth': '240',
+            'minHeight': '180',
+            'maxWidth': '640',
+            'maxHeight': '480',
+            'minFrameRate': '10',
+            'maxFrameRate': '15',
+          },
+          'facingMode': 'user',
+          'optional': [],
+        },
+      };
+      
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Trying lower quality camera...';
+        });
+      }
+      
+      _localStream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+      
+      if (_isDisposed) {
+        await _localStream?.dispose();
+        return;
+      }
+      
+      _localVideoRenderer.srcObject = _localStream;
+      
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Camera ready (reduced quality)';
+        });
+      }
+    } catch (e) {
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Camera unavailable: $e';
+        });
+      }
     }
   }
 
   Future<void> _createPeerConnection() async {
+    if (_isDisposed) return;
+    
     try {
       _peerConnection = await createPeerConnection(Config.iceServers, Config.rtcConfig);
+      
+      if (_isDisposed) {
+        await _peerConnection?.dispose();
+        return;
+      }
 
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
-        if (_remoteSocketId != null) {
+        if (_remoteSocketId != null && !_isDisposed) {
           _signaling.sendIceCandidate(_remoteSocketId!, candidate);
         }
       };
 
       _peerConnection!.onIceConnectionState = (RTCIceConnectionState state) {
-        setState(() {
-          _connectionStatus = 'ICE Connection: ${state.toString()}';
-          _isConnected = state == RTCIceConnectionState.RTCIceConnectionStateConnected;
-        });
+        if (!_isDisposed) {
+          setState(() {
+            _connectionStatus = 'ICE Connection: ${state.toString().split('.').last}';
+            _isConnected = state == RTCIceConnectionState.RTCIceConnectionStateConnected;
+          });
+          
+          // Handle connection failures
+          if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+            _handleConnectionFailure();
+          }
+        }
+      };
+      
+      _peerConnection!.onConnectionState = (RTCPeerConnectionState state) {
+        if (!_isDisposed) {
+          print('Peer connection state: $state');
+          if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+            _handleConnectionFailure();
+          }
+        }
       };
 
       _peerConnection!.onAddStream = (MediaStream stream) {
-        setState(() {
-          _remoteVideoRenderer.srcObject = stream;
-          _connectionStatus = 'Remote stream received';
-        });
+        if (!_isDisposed) {
+          setState(() {
+            _remoteVideoRenderer.srcObject = stream;
+            _connectionStatus = 'Connected to peer';
+          });
+        }
+      };
+      
+      _peerConnection!.onRemoveStream = (MediaStream stream) {
+        if (!_isDisposed) {
+          setState(() {
+            _remoteVideoRenderer.srcObject = null;
+            _connectionStatus = 'Peer disconnected';
+          });
+        }
       };
 
-      if (_localStream != null) {
+      if (_localStream != null && !_isDisposed) {
         await _peerConnection!.addStream(_localStream!);
       }
 
-      setState(() {
-        _connectionStatus = 'Peer connection created';
-      });
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Peer connection ready';
+        });
+      }
     } catch (e) {
+      print('Error creating peer connection: $e');
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Connection error: ${e.toString().split(':').last.trim()}';
+        });
+      }
+    }
+  }
+  
+  void _handleConnectionFailure() {
+    print('Connection failed, attempting to reconnect...');
+    if (!_isDisposed) {
       setState(() {
-        _connectionStatus = 'Error creating peer connection: $e';
+        _connectionStatus = 'Connection failed, retrying...';
       });
+      
+      // Restart the connection after a delay
+      Future.delayed(const Duration(seconds: 3), () {
+        if (!_isDisposed && _remoteSocketId != null) {
+          _restartConnection();
+        }
+      });
+    }
+  }
+  
+  Future<void> _restartConnection() async {
+    if (_isDisposed) return;
+    
+    try {
+      // Close existing connection
+      await _peerConnection?.close();
+      _peerConnection = null;
+      
+      // Reinitialize camera if needed
+      if (_localStream == null) {
+        await _getUserMedia();
+      }
+      
+      // Create new peer connection
+      await _createPeerConnection();
+      
+      // Restart the call process
+      if (_remoteSocketId != null) {
+        await _createOffer();
+      }
+    } catch (e) {
+      print('Error restarting connection: $e');
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Restart failed: $e';
+        });
+      }
     }
   }
 
@@ -269,57 +562,100 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   }
 
   void _toggleMute() {
-    if (_localStream != null) {
-      _localStream!.getAudioTracks().forEach((track) {
-        track.enabled = _isMuted;
-      });
-      setState(() {
-        _isMuted = !_isMuted;
-      });
+    if (_localStream != null && !_isDisposed) {
+      try {
+        _localStream!.getAudioTracks().forEach((track) {
+          track.enabled = _isMuted;
+        });
+        setState(() {
+          _isMuted = !_isMuted;
+        });
+      } catch (e) {
+        print('Error toggling mute: $e');
+      }
     }
   }
 
   void _toggleVideo() {
-    if (_localStream != null) {
-      _localStream!.getVideoTracks().forEach((track) {
-        track.enabled = !_isVideoEnabled;
-      });
-      setState(() {
-        _isVideoEnabled = !_isVideoEnabled;
-      });
+    if (_localStream != null && !_isDisposed) {
+      try {
+        _localStream!.getVideoTracks().forEach((track) {
+          track.enabled = !_isVideoEnabled;
+        });
+        setState(() {
+          _isVideoEnabled = !_isVideoEnabled;
+        });
+      } catch (e) {
+        print('Error toggling video: $e');
+        // If toggling fails, try to reinitialize camera
+        if (_isVideoEnabled) {
+          _reinitializeCamera();
+        }
+      }
     }
   }
 
-  void _hangUp() {
-    _localStream?.dispose();
-    _peerConnection?.close();
-    _peerConnection = null;
-    _localStream = null;
-    _localVideoRenderer.srcObject = null;
-    _remoteVideoRenderer.srcObject = null;
+  void _hangUp() async {
+    if (_isDisposed) return;
     
-    setState(() {
-      _isConnected = false;
-      _connectionStatus = 'Disconnected';
-    });
+    try {
+      setState(() {
+        _connectionStatus = 'Disconnecting...';
+        _isConnected = false;
+      });
+      
+      // Close peer connection first
+      await _peerConnection?.close();
+      _peerConnection = null;
+      
+      // Dispose local stream
+      await _localStream?.dispose();
+      _localStream = null;
+      
+      // Clear video renderers
+      _localVideoRenderer.srcObject = null;
+      _remoteVideoRenderer.srcObject = null;
+      
+      // Reset remote socket
+      _remoteSocketId = null;
+      
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Disconnected';
+        });
+      }
+    } catch (e) {
+      print('Error during hang up: $e');
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Disconnected';
+        });
+      }
+    }
   }
 
   void _startCall() async {
+    if (_isDisposed) return;
+    
     try {
       // Connect to signaling server
-      setState(() {
-        _connectionStatus = 'Connecting to signaling server...';
-      });
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Connecting to server...';
+        });
+      }
       
       _signaling.connect(Config.currentSignalingUrl);
       
-      // Wait a moment for connection
+      // Wait for connection
       await Future.delayed(const Duration(seconds: 2));
+      
+      if (_isDisposed) return;
       
       // Check if connected
       if (!_signaling.isConnected) {
         setState(() {
-          _connectionStatus = 'Failed to connect to signaling server';
+          _connectionStatus = 'Server connection failed';
         });
         return;
       }
@@ -329,17 +665,29 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
       
       // Get user media and create peer connection
       await _getUserMedia();
+      
+      if (_isDisposed) return;
+      
       if (_localStream != null) {
         await _createPeerConnection();
         
+        if (!_isDisposed) {
+          setState(() {
+            _connectionStatus = 'Ready - waiting for peer...';
+          });
+        }
+      } else {
         setState(() {
-          _connectionStatus = 'Ready for call - waiting for peer...';
+          _connectionStatus = 'Camera initialization failed';
         });
       }
     } catch (e) {
-      setState(() {
-        _connectionStatus = 'Error starting call: $e';
-      });
+      print('Error starting call: $e');
+      if (!_isDisposed) {
+        setState(() {
+          _connectionStatus = 'Start failed: ${e.toString().split(':').last.trim()}';
+        });
+      }
     }
   }
 
