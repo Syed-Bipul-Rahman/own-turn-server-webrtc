@@ -29,3 +29,13 @@ liveness_check:
   timeout_sec: 4
   failure_threshold: 4
   success_threshold: 2
+
+
+#tunnel: c68ee3dc-c53f-45e6-8f28-dfca6579f6b3
+#credentials-file: /home/shuvosta/.cloudflared/c68ee3dc-c53f-45e6-8f28-dfca6579f6b3.json
+#
+#ingress:
+#  - hostname: webrtc.syedbipul.me
+#    service: ws://localhost:8080
+#  - service: http_status:404
+

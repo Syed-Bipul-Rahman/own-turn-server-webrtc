@@ -5,7 +5,8 @@ import 'dart:math';
 import 'config.dart';
 import 'signaling_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
 
@@ -107,14 +108,34 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
     };
   }
 
-  Future<void> _requestPermissions() async {
-    await Permission.camera.request();
-    await Permission.microphone.request();
+  Future<bool> _requestPermissions() async {
+    final cameraStatus = await Permission.camera.request();
+    final microphoneStatus = await Permission.microphone.request();
+    
+    if (cameraStatus != PermissionStatus.granted) {
+      setState(() {
+        _connectionStatus = 'Camera permission denied';
+      });
+      return false;
+    }
+    
+    if (microphoneStatus != PermissionStatus.granted) {
+      setState(() {
+        _connectionStatus = 'Microphone permission denied';
+      });
+      return false;
+    }
+    
+    return true;
   }
 
   Future<void> _getUserMedia() async {
     try {
-      await _requestPermissions();
+      final permissionsGranted = await _requestPermissions();
+      if (!permissionsGranted) {
+        return;
+      }
+      
       _localStream = await navigator.mediaDevices.getUserMedia(Config.mediaConstraints);
       _localVideoRenderer.srcObject = _localStream;
 
@@ -284,26 +305,42 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> {
   }
 
   void _startCall() async {
-    // Connect to signaling server
-    setState(() {
-      _connectionStatus = 'Connecting to signaling server...';
-    });
-    
-    _signaling.connect(Config.currentSignalingUrl);
-    
-    // Wait a moment for connection
-    await Future.delayed(const Duration(seconds: 1));
-    
-    // Join room
-    _signaling.joinRoom(_currentRoom, _userId);
-    
-    // Get user media and create peer connection
-    await _getUserMedia();
-    await _createPeerConnection();
-    
-    setState(() {
-      _connectionStatus = 'Ready for call - waiting for peer...';
-    });
+    try {
+      // Connect to signaling server
+      setState(() {
+        _connectionStatus = 'Connecting to signaling server...';
+      });
+      
+      _signaling.connect(Config.currentSignalingUrl);
+      
+      // Wait a moment for connection
+      await Future.delayed(const Duration(seconds: 2));
+      
+      // Check if connected
+      if (!_signaling.isConnected) {
+        setState(() {
+          _connectionStatus = 'Failed to connect to signaling server';
+        });
+        return;
+      }
+      
+      // Join room
+      _signaling.joinRoom(_currentRoom, _userId);
+      
+      // Get user media and create peer connection
+      await _getUserMedia();
+      if (_localStream != null) {
+        await _createPeerConnection();
+        
+        setState(() {
+          _connectionStatus = 'Ready for call - waiting for peer...';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _connectionStatus = 'Error starting call: $e';
+      });
+    }
   }
 
   void _initiateCall() async {
