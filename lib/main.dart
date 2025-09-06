@@ -19,10 +19,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'WebRTC Video Chat',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        useMaterial3: true,
-      ),
+      theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: const WebRTCVideoChat(),
     );
   }
@@ -35,11 +32,12 @@ class WebRTCVideoChat extends StatefulWidget {
   State<WebRTCVideoChat> createState() => _WebRTCVideoChatState();
 }
 
-class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingObserver {
+class _WebRTCVideoChatState extends State<WebRTCVideoChat>
+    with WidgetsBindingObserver {
   final _localVideoRenderer = RTCVideoRenderer();
   final _remoteVideoRenderer = RTCVideoRenderer();
   final _signaling = SignalingService();
-  
+
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   bool _isInitialized = false;
@@ -131,23 +129,23 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
 
   Future<void> _reinitializeCamera() async {
     if (_isDisposed) return;
-    
+
     try {
       setState(() {
         _connectionStatus = 'Reinitializing camera...';
       });
-      
+
       // Dispose old stream
       await _localStream?.dispose();
       _localStream = null;
       _localVideoRenderer.srcObject = null;
-      
+
       // Get new stream
       await _getUserMedia();
-      
-      // Update peer connection if exists
+
+      // Update peer connection if exists using addTrack
       if (_peerConnection != null && _localStream != null) {
-        await _peerConnection!.addStream(_localStream!);
+        await _addLocalStreamToPeerConnection();
       }
     } catch (e) {
       if (!_isDisposed) {
@@ -205,21 +203,23 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
       // Check current status first
       final cameraStatus = await Permission.camera.status;
       final microphoneStatus = await Permission.microphone.status;
-      
-      if (cameraStatus == PermissionStatus.granted && 
+
+      if (cameraStatus == PermissionStatus.granted &&
           microphoneStatus == PermissionStatus.granted) {
         return true;
       }
-      
+
       // Request permissions
       Map<Permission, PermissionStatus> statuses = await [
         Permission.camera,
         Permission.microphone,
       ].request();
-      
-      final cameraGranted = statuses[Permission.camera] == PermissionStatus.granted;
-      final micGranted = statuses[Permission.microphone] == PermissionStatus.granted;
-      
+
+      final cameraGranted =
+          statuses[Permission.camera] == PermissionStatus.granted;
+      final micGranted =
+          statuses[Permission.microphone] == PermissionStatus.granted;
+
       if (!cameraGranted) {
         if (!_isDisposed) {
           setState(() {
@@ -228,16 +228,17 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
         }
         return false;
       }
-      
+
       if (!micGranted) {
         if (!_isDisposed) {
           setState(() {
-            _connectionStatus = 'Microphone permission required for audio calls';
+            _connectionStatus =
+                'Microphone permission required for audio calls';
           });
         }
         return false;
       }
-      
+
       return true;
     } catch (e) {
       if (!_isDisposed) {
@@ -251,33 +252,35 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
 
   Future<void> _getUserMedia() async {
     if (_isDisposed || _isInBackground) return;
-    
+
     try {
       if (!_isDisposed) {
         setState(() {
           _connectionStatus = 'Requesting camera access...';
         });
       }
-      
+
       final permissionsGranted = await _requestPermissions();
       if (!permissionsGranted || _isDisposed) {
         return;
       }
-      
+
       // Add small delay to ensure camera is ready
       await Future.delayed(const Duration(milliseconds: 500));
-      
+
       if (_isDisposed) return;
-      
-      _localStream = await navigator.mediaDevices.getUserMedia(Config.mediaConstraints);
-      
+
+      _localStream = await navigator.mediaDevices.getUserMedia(
+        Config.mediaConstraints,
+      );
+
       if (_isDisposed) {
         await _localStream?.dispose();
         return;
       }
-      
+
       _localVideoRenderer.srcObject = _localStream;
-      
+
       // Add stream tracks event listeners for Android
       _localStream?.getVideoTracks().forEach((track) {
         track.onEnded = () {
@@ -287,7 +290,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
           }
         };
       });
-      
+
       if (!_isDisposed) {
         setState(() {
           _connectionStatus = 'Camera ready';
@@ -297,9 +300,10 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
       print('Error getting user media: $e');
       if (!_isDisposed) {
         setState(() {
-          _connectionStatus = 'Camera error: ${e.toString().split(':').last.trim()}';
+          _connectionStatus =
+              'Camera error: ${e.toString().split(':').last.trim()}';
         });
-        
+
         // Try again with lower quality settings on Android
         if (Platform.isAndroid) {
           await _tryFallbackCamera();
@@ -307,10 +311,10 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
       }
     }
   }
-  
+
   Future<void> _tryFallbackCamera() async {
     if (_isDisposed) return;
-    
+
     try {
       const fallbackConstraints = {
         'audio': true,
@@ -327,22 +331,24 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
           'optional': [],
         },
       };
-      
+
       if (!_isDisposed) {
         setState(() {
           _connectionStatus = 'Trying lower quality camera...';
         });
       }
-      
-      _localStream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
-      
+
+      _localStream = await navigator.mediaDevices.getUserMedia(
+        fallbackConstraints,
+      );
+
       if (_isDisposed) {
         await _localStream?.dispose();
         return;
       }
-      
+
       _localVideoRenderer.srcObject = _localStream;
-      
+
       if (!_isDisposed) {
         setState(() {
           _connectionStatus = 'Camera ready (reduced quality)';
@@ -357,12 +363,43 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
     }
   }
 
+  // NEW METHOD: Add local stream tracks to peer connection using addTrack
+  Future<void> _addLocalStreamToPeerConnection() async {
+    if (_peerConnection == null || _localStream == null || _isDisposed) return;
+
+    try {
+      // Add audio tracks
+      for (var audioTrack in _localStream!.getAudioTracks()) {
+        await _peerConnection!.addTrack(audioTrack, _localStream!);
+      }
+
+      // Add video tracks
+      for (var videoTrack in _localStream!.getVideoTracks()) {
+        await _peerConnection!.addTrack(videoTrack, _localStream!);
+      }
+
+      print(
+        'Added ${_localStream!.getAudioTracks().length} audio tracks and ${_localStream!.getVideoTracks().length} video tracks',
+      );
+    } catch (e) {
+      print('Error adding tracks to peer connection: $e');
+      throw e;
+    }
+  }
+
   Future<void> _createPeerConnection() async {
     if (_isDisposed) return;
-    
+
     try {
-      _peerConnection = await createPeerConnection(Config.iceServers, Config.rtcConfig);
-      
+      // UPDATED: Use Plan B SDP semantics to avoid the Unified Plan issue
+      final configuration = Map<String, dynamic>.from(Config.iceServers);
+      configuration['sdpSemantics'] = 'plan-b'; // Force Plan B semantics
+
+      _peerConnection = await createPeerConnection(
+        configuration,
+        Config.rtcConfig,
+      );
+
       if (_isDisposed) {
         await _peerConnection?.dispose();
         return;
@@ -377,17 +414,19 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
       _peerConnection!.onIceConnectionState = (RTCIceConnectionState state) {
         if (!_isDisposed) {
           setState(() {
-            _connectionStatus = 'ICE Connection: ${state.toString().split('.').last}';
-            _isConnected = state == RTCIceConnectionState.RTCIceConnectionStateConnected;
+            _connectionStatus =
+                'ICE Connection: ${state.toString().split('.').last}';
+            _isConnected =
+                state == RTCIceConnectionState.RTCIceConnectionStateConnected;
           });
-          
+
           // Handle connection failures
           if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
             _handleConnectionFailure();
           }
         }
       };
-      
+
       _peerConnection!.onConnectionState = (RTCPeerConnectionState state) {
         if (!_isDisposed) {
           print('Peer connection state: $state');
@@ -397,6 +436,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
         }
       };
 
+      // UPDATED: Handle both onAddStream (for Plan B) and onTrack (for Unified Plan)
       _peerConnection!.onAddStream = (MediaStream stream) {
         if (!_isDisposed) {
           setState(() {
@@ -405,7 +445,16 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
           });
         }
       };
-      
+
+      _peerConnection!.onTrack = (RTCTrackEvent event) {
+        if (!_isDisposed && event.streams.isNotEmpty) {
+          setState(() {
+            _remoteVideoRenderer.srcObject = event.streams[0];
+            _connectionStatus = 'Connected to peer (track)';
+          });
+        }
+      };
+
       _peerConnection!.onRemoveStream = (MediaStream stream) {
         if (!_isDisposed) {
           setState(() {
@@ -415,8 +464,17 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
         }
       };
 
+      // UPDATED: Use addTrack instead of addStream for better compatibility
       if (_localStream != null && !_isDisposed) {
-        await _peerConnection!.addStream(_localStream!);
+        try {
+          // Try Plan B approach first (addStream)
+          await _peerConnection!.addStream(_localStream!);
+          print('Successfully added stream using addStream (Plan B)');
+        } catch (e) {
+          print('addStream failed, trying addTrack: $e');
+          // If addStream fails, try addTrack approach
+          await _addLocalStreamToPeerConnection();
+        }
       }
 
       if (!_isDisposed) {
@@ -428,19 +486,20 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
       print('Error creating peer connection: $e');
       if (!_isDisposed) {
         setState(() {
-          _connectionStatus = 'Connection error: ${e.toString().split(':').last.trim()}';
+          _connectionStatus =
+              'Connection error: ${e.toString().split(':').last.trim()}';
         });
       }
     }
   }
-  
+
   void _handleConnectionFailure() {
     print('Connection failed, attempting to reconnect...');
     if (!_isDisposed) {
       setState(() {
         _connectionStatus = 'Connection failed, retrying...';
       });
-      
+
       // Restart the connection after a delay
       Future.delayed(const Duration(seconds: 3), () {
         if (!_isDisposed && _remoteSocketId != null) {
@@ -449,23 +508,23 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
       });
     }
   }
-  
+
   Future<void> _restartConnection() async {
     if (_isDisposed) return;
-    
+
     try {
       // Close existing connection
       await _peerConnection?.close();
       _peerConnection = null;
-      
+
       // Reinitialize camera if needed
       if (_localStream == null) {
         await _getUserMedia();
       }
-      
+
       // Create new peer connection
       await _createPeerConnection();
-      
+
       // Restart the call process
       if (_remoteSocketId != null) {
         await _createOffer();
@@ -484,7 +543,9 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
     if (_peerConnection == null || _remoteSocketId == null) return;
 
     try {
-      RTCSessionDescription description = await _peerConnection!.createOffer(Config.offerAnswerConstraints);
+      RTCSessionDescription description = await _peerConnection!.createOffer(
+        Config.offerAnswerConstraints,
+      );
       await _peerConnection!.setLocalDescription(description);
       _signaling.sendOffer(_remoteSocketId!, description);
 
@@ -502,7 +563,9 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
     if (_peerConnection == null || _remoteSocketId == null) return;
 
     try {
-      RTCSessionDescription description = await _peerConnection!.createAnswer(Config.offerAnswerConstraints);
+      RTCSessionDescription description = await _peerConnection!.createAnswer(
+        Config.offerAnswerConstraints,
+      );
       await _peerConnection!.setLocalDescription(description);
       _signaling.sendAnswer(_remoteSocketId!, description);
 
@@ -522,7 +585,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
     try {
       await _peerConnection!.setRemoteDescription(offer);
       await _createAnswer();
-      
+
       setState(() {
         _connectionStatus = 'Offer received, answer sent';
       });
@@ -538,7 +601,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
 
     try {
       await _peerConnection!.setRemoteDescription(answer);
-      
+
       setState(() {
         _connectionStatus = 'Answer received';
       });
@@ -597,28 +660,28 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
 
   void _hangUp() async {
     if (_isDisposed) return;
-    
+
     try {
       setState(() {
         _connectionStatus = 'Disconnecting...';
         _isConnected = false;
       });
-      
+
       // Close peer connection first
       await _peerConnection?.close();
       _peerConnection = null;
-      
+
       // Dispose local stream
       await _localStream?.dispose();
       _localStream = null;
-      
+
       // Clear video renderers
       _localVideoRenderer.srcObject = null;
       _remoteVideoRenderer.srcObject = null;
-      
+
       // Reset remote socket
       _remoteSocketId = null;
-      
+
       if (!_isDisposed) {
         setState(() {
           _connectionStatus = 'Disconnected';
@@ -636,7 +699,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
 
   void _startCall() async {
     if (_isDisposed) return;
-    
+
     try {
       // Connect to signaling server
       if (!_isDisposed) {
@@ -644,14 +707,14 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
           _connectionStatus = 'Connecting to server...';
         });
       }
-      
+
       _signaling.connect(Config.currentSignalingUrl);
-      
+
       // Wait for connection
       await Future.delayed(const Duration(seconds: 2));
-      
+
       if (_isDisposed) return;
-      
+
       // Check if connected
       if (!_signaling.isConnected) {
         setState(() {
@@ -659,18 +722,18 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
         });
         return;
       }
-      
+
       // Join room
       _signaling.joinRoom(_currentRoom, _userId);
-      
+
       // Get user media and create peer connection
       await _getUserMedia();
-      
+
       if (_isDisposed) return;
-      
+
       if (_localStream != null) {
         await _createPeerConnection();
-        
+
         if (!_isDisposed) {
           setState(() {
             _connectionStatus = 'Ready - waiting for peer...';
@@ -685,7 +748,8 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
       print('Error starting call: $e');
       if (!_isDisposed) {
         setState(() {
-          _connectionStatus = 'Start failed: ${e.toString().split(':').last.trim()}';
+          _connectionStatus =
+              'Start failed: ${e.toString().split(':').last.trim()}';
         });
       }
     }
@@ -701,11 +765,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
   @override
   Widget build(BuildContext context) {
     if (!_isInitialized) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
@@ -728,7 +788,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
               ),
             ),
           ),
-          
+
           // Video containers
           Expanded(
             child: Stack(
@@ -747,7 +807,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
                           ),
                         ),
                 ),
-                
+
                 // Local video (picture-in-picture)
                 Positioned(
                   top: 20,
@@ -779,7 +839,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
               ],
             ),
           ),
-          
+
           // Control buttons
           Container(
             padding: const EdgeInsets.all(20),
@@ -788,15 +848,19 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
               children: [
                 // Start call button
                 ElevatedButton.icon(
-                  onPressed: _isConnected ? null : (_remoteSocketId == null ? _startCall : _initiateCall),
+                  onPressed: _isConnected
+                      ? null
+                      : (_remoteSocketId == null ? _startCall : _initiateCall),
                   icon: const Icon(Icons.call),
-                  label: Text(_remoteSocketId == null ? 'Join Room' : 'Call Peer'),
+                  label: Text(
+                    _remoteSocketId == null ? 'Join Room' : 'Call Peer',
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,
                   ),
                 ),
-                
+
                 // Mute button
                 IconButton(
                   onPressed: _isMuted ? null : _toggleMute,
@@ -804,15 +868,17 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
                   color: _isMuted ? Colors.red : Colors.blue,
                   iconSize: 32,
                 ),
-                
+
                 // Video toggle button
                 IconButton(
                   onPressed: _toggleVideo,
-                  icon: Icon(_isVideoEnabled ? Icons.videocam : Icons.videocam_off),
+                  icon: Icon(
+                    _isVideoEnabled ? Icons.videocam : Icons.videocam_off,
+                  ),
                   color: _isVideoEnabled ? Colors.blue : Colors.red,
                   iconSize: 32,
                 ),
-                
+
                 // Hang up button
                 ElevatedButton.icon(
                   onPressed: _isConnected ? _hangUp : null,
@@ -826,7 +892,7 @@ class _WebRTCVideoChatState extends State<WebRTCVideoChat> with WidgetsBindingOb
               ],
             ),
           ),
-          
+
           // Technical details
           Padding(
             padding: const EdgeInsets.all(16),
